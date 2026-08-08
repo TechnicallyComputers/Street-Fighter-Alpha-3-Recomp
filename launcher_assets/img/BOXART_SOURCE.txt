@@ -1,0 +1,5 @@
+Box art sourced from libretro-thumbnails (Named_Boxarts).
+Matched name: Street Fighter Alpha 3 (USA)
+URL: https://thumbnails.libretro.com/Sony%20-%20PlayStation/Named_Boxarts/Street%20Fighter%20Alpha%203%20(USA).png
+https://github.com/libretro-thumbnails/libretro-thumbnails
+Convert: PNG → 32-bit TGA for recomp-ui LAUNCHER_BOXART.

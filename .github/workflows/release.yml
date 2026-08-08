@@ -1,0 +1,393 @@
+# Setup-host multi-platform release template for a PSXRecomp *game* repository.
+#
+# Install:
+#   mkdir -p .github/workflows
+#   cp psxrecomp/docs/ci/templates/setup-release.yml .github/workflows/release.yml
+# Then replace every YOUR_* token (or let setup_project / fill_tokens.py do it).
+# See docs/GAME_PROJECT_SETUP.md.
+#
+# Shared (do not fork these into the title):
+#   ./psxrecomp/.github/actions/{build-emitters,fetch-toolchain (optional embed),stage-setup-sdk}
+#   psxrecomp/tools/ci/*.sh
+#   psxrecomp/tools/{fetch_toolchain,stage_setup_sdk,bundle_mingw_dlls,package_setup_host}.sh
+#   psxrecomp/psxrecomp_cli.py  (CLI lives in the submodule — no psxrecomp-sdk/)
+#
+# Title-owned:
+#   CMake setup-host flags, thin scripts/package_setup_release.sh wrapper
+#
+# No private CI assets. No BIOS dumps. No generated/ required.
+# Do not set PSX_PGO in CI (PGO stays user-local after Generate).
+# Release hosts always build with PSX_HAVE_VULKAN (headers + glslc); runtime
+# still loads the ICD dynamically via SDL.
+
+name: Release builds
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0 or v0.1.0)'
+        required: true
+        type: string
+      publish:
+        description: 'Create git tag vX.Y.Z and GitHub Release'
+        required: true
+        type: boolean
+        default: true
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: sfa-release-${{ github.event_name }}-${{ github.ref }}-${{ github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+env:
+  CMAKE_BUILD_TYPE: Release
+
+jobs:
+  prepare:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      publish: ${{ steps.meta.outputs.publish }}
+    steps:
+      - name: Normalize version / tag
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            RAW="${{ github.event.inputs.version }}"
+            PUBLISH="${{ github.event.inputs.publish }}"
+          else
+            RAW="${{ github.ref_name }}"
+            PUBLISH="true"
+          fi
+          RAW="$(printf '%s' "${RAW}" | tr -d '[:space:]')"
+          if [[ -z "${RAW}" ]]; then
+            echo "::error::version is empty"
+            exit 1
+          fi
+          VER="${RAW#v}"
+          if [[ ! "${VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.+-]*)?$ ]]; then
+            echo "::error::invalid version '${RAW}' (want X.Y.Z or vX.Y.Z)"
+            exit 1
+          fi
+          TAG="v${VER}"
+          echo "version=${VER}" >>"$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
+          echo "publish=${PUBLISH}" >>"$GITHUB_OUTPUT"
+          echo "Using version ${VER} (tag ${TAG}), publish=${PUBLISH}"
+
+  build:
+    name: ${{ matrix.artifact }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            artifact: linux-x64
+            shell: bash
+          - os: windows-2022
+            artifact: windows-x64
+            shell: 'msys2 {0}'
+          - os: macos-15
+            artifact: macos-arm64
+            shell: bash
+            deployment_target: '11.0'
+          - os: macos-15-intel
+            artifact: macos-x64
+            shell: bash
+            deployment_target: '11.0'
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+    env:
+      # Rename to match your packager (e.g. BPE_RELEASE_VERSION).
+      RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Pin VERSION
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s\n' "${RELEASE_VERSION}" >VERSION
+          echo "VERSION=$(cat VERSION)"
+
+      # Submodule gitlinks are the pin; this step only logs SHAs for the job.
+      - name: Record framework revisions
+        shell: bash
+        run: bash psxrecomp/tools/ci/record_pins.sh
+
+      - name: Setup host mode (no game C / BIOS backends in CI)
+        shell: bash
+        run: bash psxrecomp/tools/ci/clear_generated.sh
+
+      - name: Setup MSYS2 (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-vulkan-headers
+            mingw-w64-x86_64-shaderc
+            curl
+            zip
+
+      - name: Install deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          # X11 + xtst required when FetchContent builds SDL3 (XTEST).
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libsdl2-dev libgl1-mesa-dev libxtst-dev \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
+            libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
+            libasound2-dev libpulse-dev libudev-dev zip \
+            libvulkan-dev glslc
+
+      - name: Install deps (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install cmake ninja pkg-config sdl3 \
+            vulkan-headers shaderc molten-vk \
+            || brew install cmake ninja pkg-config sdl2 \
+            vulkan-headers shaderc molten-vk
+
+      # Headers + glslc are enough to compile PSX_HAVE_VULKAN (runtime still
+      # loads the ICD dynamically via SDL). Fail early if the stub path would
+      # be selected so release hosts always ship the real Vulkan backend.
+      - name: Verify Vulkan build tools
+        run: |
+          set -euo pipefail
+          command -v glslc
+          glslc --version || true
+          HDR=""
+          for candidate in \
+              /mingw64/include/vulkan/vulkan.h \
+              /usr/include/vulkan/vulkan.h \
+              /opt/homebrew/include/vulkan/vulkan.h \
+              /usr/local/include/vulkan/vulkan.h; do
+            if [[ -f "${candidate}" ]]; then
+              HDR="${candidate}"
+              break
+            fi
+          done
+          if [[ -z "${HDR}" ]] && command -v brew >/dev/null 2>&1; then
+            BREW_HDR="$(brew --prefix)/include/vulkan/vulkan.h"
+            if [[ -f "${BREW_HDR}" ]]; then
+              HDR="${BREW_HDR}"
+            fi
+          fi
+          if [[ -z "${HDR}" ]]; then
+            echo "::error::vulkan/vulkan.h not found"
+            exit 1
+          fi
+          echo "Found ${HDR}"
+
+      # Windows: build emitters with llvm-mingw from cmake-clang-v1 (static CLI).
+      # Zip still omits toolchain/ — fetch is for the build machine only.
+      - name: Fetch portable toolchain (Windows emitters)
+        if: runner.os == 'Windows'
+        uses: ./psxrecomp/.github/actions/fetch-toolchain
+        with:
+          artifact: ${{ matrix.artifact }}
+
+      - name: Build recompiler tools (emitters)
+        uses: ./psxrecomp/.github/actions/build-emitters
+
+      - name: Configure & build setup host
+        env:
+          CMAKE_OSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target || '' }}
+        run: |
+          set -euo pipefail
+          EXTRA=()
+          if [[ -n "${CMAKE_OSX_DEPLOYMENT_TARGET:-}" ]]; then
+            EXTRA+=("-DCMAKE_OSX_DEPLOYMENT_TARGET=${CMAKE_OSX_DEPLOYMENT_TARGET}")
+          fi
+          # Point CMake at Vulkan headers/glslc. Prefer VULKAN_SDK layout
+          # (runtime.cmake checks $VULKAN_SDK first); also seed CMAKE_PREFIX_PATH
+          # so find_path works after the empty-_vk_inc fix in runtime.cmake.
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            BREW_PREFIX="$(brew --prefix)"
+            export PATH="${BREW_PREFIX}/bin${PATH:+:${PATH}}"
+            if command -v brew >/dev/null 2>&1; then
+              SHADERC_PREFIX="$(brew --prefix shaderc 2>/dev/null || true)"
+              VK_HDR_PREFIX="$(brew --prefix vulkan-headers 2>/dev/null || true)"
+              if [[ -n "${SHADERC_PREFIX}" && -d "${SHADERC_PREFIX}/bin" ]]; then
+                export PATH="${SHADERC_PREFIX}/bin:${PATH}"
+              fi
+              for p in "${VK_HDR_PREFIX}" "${SHADERC_PREFIX}" "${BREW_PREFIX}"; do
+                if [[ -n "${p}" && -d "${p}" ]]; then
+                  export CMAKE_PREFIX_PATH="${p}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+                fi
+              done
+            else
+              export CMAKE_PREFIX_PATH="${BREW_PREFIX}${CMAKE_PREFIX_PATH:+:${CMAKE_PREFIX_PATH}}"
+            fi
+            if [[ -f "${BREW_PREFIX}/include/vulkan/vulkan.h" ]]; then
+              export VULKAN_SDK="${BREW_PREFIX}"
+            elif [[ -n "${VK_HDR_PREFIX:-}" && -f "${VK_HDR_PREFIX}/include/vulkan/vulkan.h" ]]; then
+              export VULKAN_SDK="${VK_HDR_PREFIX}"
+            fi
+          elif [[ "$(uname -s)" == "Linux" ]]; then
+            if [[ -z "${VULKAN_SDK:-}" && -f /usr/include/vulkan/vulkan.h ]]; then
+              export VULKAN_SDK=/usr
+            fi
+          elif [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
+            if [[ -z "${VULKAN_SDK:-}" && -f /mingw64/include/vulkan/vulkan.h ]]; then
+              export VULKAN_SDK=/mingw64
+            fi
+          fi
+          if command -v glslc >/dev/null 2>&1; then
+            EXTRA+=("-DGLSLC_EXE=$(command -v glslc)")
+          fi
+          JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+          # Setup host: no game C, no BIOS backends linked. clear_generated.sh
+          # already wiped generated/; end users Generate OpenBIOS (+ optional
+          # SCPH1001) locally via the wizard, then rebuild.
+          # Prefer -DPSXRECOMP_FORCE_SETUP_HOST=ON (psxrecomp_add_game_runtime).
+          # Legacy -DYOURGAME_FORCE_SETUP_HOST=ON still works if the title wires it.
+          # PSX_SETUP_WIZARD is required with FORCE_SETUP_HOST (CMakeLists
+          # ENABLE_SETUP_WIZARD + -D here). Without it the zip never opens
+          # first-run / Generate & rebuild.
+          # Title root codegen_setup.c must define
+          # psx_game_codegen_forward_if_built (see codegen_setup.c.in) or link
+          # fails — main.cpp always calls it, including setup-host CI builds.
+          # Netplay titles: set PSX_NETPLAY ON in CMakeLists *before*
+          # include(runtime.cmake). ENABLE_NETPLAY_IF_PRESENT alone is too late
+          # (option() already cached OFF) and psx_netplay_sched.c still needs
+          # recomp_net/session.h. Also add -DPSX_NETPLAY=ON to this cmake
+          # invocation for CI belt-and-suspenders (do not leave it commented
+          # mid-continuation — that breaks the shell line).
+          # With PSX_NETPLAY, runtime.cmake defaults RNET_ENABLE_ICE=ON.
+          # recomp-net FetchContents libjuice via a pinned URL tarball (not
+          # git clone) so AppImage / mismatched libcurl hosts still configure.
+          # Offline: vendor under psxrecomp/lib/recomp-net/third_party/libjuice
+          # or pass -DRNET_LIBJUICE_ROOT=… / -DRNET_ENABLE_ICE=OFF.
+          # Add title-specific -D flags here if needed (e.g. -DMOTK_NATIVE=OFF).
+          # Netplay titles: also pass -DPSX_NETPLAY=ON here (belt-and-suspenders
+          # when CMakeLists already FORCE-caches it before include(runtime.cmake)).
+          cmake -S . -B build-ci -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPSXRECOMP_FORCE_SETUP_HOST=ON \
+            -DPSXRECOMP_ALLOW_NO_BIOS=ON \
+            -DPSX_SETUP_WIZARD=ON \
+            -DPSX_GAME_VERSION="${RELEASE_VERSION}" \
+            "${EXTRA[@]}" 2>&1 | tee build-ci-configure.log
+          if ! grep -q 'Vulkan backend: headers' build-ci-configure.log; then
+            echo "::error::CMake did not enable PSX_HAVE_VULKAN (see configure log)"
+            exit 1
+          fi
+          # Ninja does not emit flags.make (Makefiles generator only). Probe
+          # whichever compile-flag artifact exists for PSX_HAVE_VULKAN.
+          FOUND_VK_DEFINE=0
+          for f in \
+              build-ci/build.ninja \
+              build-ci/compile_commands.json \
+              build-ci/CMakeFiles/psx-runtime.dir/flags.make; do
+            if [[ -f "${f}" ]] && grep -q 'PSX_HAVE_VULKAN' "${f}"; then
+              FOUND_VK_DEFINE=1
+              echo "Found PSX_HAVE_VULKAN in ${f}"
+              break
+            fi
+          done
+          if [[ "${FOUND_VK_DEFINE}" -ne 1 ]]; then
+            echo "::error::PSX_HAVE_VULKAN missing from psx-runtime compile flags"
+            exit 1
+          fi
+          cmake --build build-ci --target psx-runtime -j"${JOBS}"
+
+      - name: Package setup zip
+        run: |
+          set -euo pipefail
+          chmod +x scripts/package_setup_release.sh
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            export PSXRECOMP_RUNTIME_BIN_DIR=/mingw64/bin
+            export BPE_RUNTIME_BIN_DIR=/mingw64/bin
+          fi
+          export RELEASE_VERSION
+          # Lean zip (no embedded toolchain/). RetComM / wizard download
+          # cmake-clang-v1; pass --embed-toolchain only for offline-first packs.
+          scripts/package_setup_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
+          ls -la dist/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # Artifact name uses the title zip prefix (e.g. bpe, motk).
+          name: sfa-${{ matrix.artifact }}
+          path: dist/sfa-*-${{ matrix.artifact }}.zip
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: GitHub Release
+    needs: [prepare, build]
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (for tagging on workflow_dispatch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: false
+
+      - name: Flatten zips
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find artifacts -type f -name 'sfa-*.zip' -exec cp -v {} dist/ \;
+          ls -la dist/
+
+      - name: Ensure release tag exists
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            git tag -a "${TAG}" -m "Street Fighter Alpha 3 Recompiled ${TAG}"
+          fi
+          if ! git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            git push origin "refs/tags/${TAG}"
+          fi
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.prepare.outputs.tag }}
+          # Quoted: titles may contain ':' (e.g. "Marvel vs. Capcom: …").
+          name: "Street Fighter Alpha 3 Recompiled ${{ needs.prepare.outputs.tag }}"
+          files: |
+            dist/sfa-*.zip
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          target_commitish: ${{ github.sha }}

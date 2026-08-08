@@ -1,0 +1,45 @@
+{
+  "format_version": 1,
+  "game": {
+    "name": "Street Fighter Alpha 3",
+    "id": "SLUS-00821",
+    "boot_exe": "SLUS_008.21"
+  },
+  "marketing": {
+    "description": "The PlayStation port of Street Fighter Alpha 3 has added new characters to the roster, including Juli, Juni, Balrog, Dee Jay, Fei Long and T. Hawk. They come with new portraits and their own scenarios. Guile, Evil Ryu and Shin Akuma have also been added as secret characters that can be unlocked through World Tour mode, a mode that allows players to strengthen and customize the fighting style of their chosen character while traveling the world.",
+    "publisher": "Capcom",
+    "year": "1998",
+    "region": "USA",
+    "players": 2
+  },
+  "rom_identity": {
+    "cue_name": "Street Fighter Alpha 3 (USA).cue",
+    "bin_name": "Street Fighter Alpha 3 (USA) (Track 1).bin",
+    "track_counts": [
+      2
+    ],
+    "require_cue": true,
+    "data_track": {
+      "size": 484081584,
+      "md5": "c232562dced4e65664a9c5410e6e57a3",
+      "sha1": "ec98188f53dbfa08a59d89c981e9ca68b7f1748e"
+    },
+    "disc_fp": "cad48836331f2e1649c5389582014df3a52607dc10481def3c43138f72a81b2b"
+  },
+  "exe": {
+    "load_address": "0x80113B00",
+    "entry_pc": "0x80113B08",
+    "text_size": "0x000A5800",
+    "stack_base": "0x801FFFF0"
+  },
+  "seeds": {
+    "count": 1165,
+    "source": "boot_exe_jal"
+  },
+  "warnings": [],
+  "notes": [
+    "entry_pc/load_address/text_size/stack_base taken from PS-X EXE header.",
+    "seeds are first-pass boot-EXE JAL targets (+ entry); expect to grow as overlays / runtime paths are discovered.",
+    "required_disc_fp is psxrecomp-toc-v1 (matches runtime DiscIdentity)."
+  ]
+}

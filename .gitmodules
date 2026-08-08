@@ -1,0 +1,8 @@
+[submodule "psxrecomp"]
+	path = psxrecomp
+	url = https://github.com/mstan/psxrecomp.git
+	branch = integrate/game-codegen-hooks-into-rollback
+[submodule "recomp-ui"]
+	path = recomp-ui
+	url = https://github.com/mstan/recomp-ui.git
+	branch = integrate/setup-generate-wizard-into-rollback

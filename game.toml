@@ -1,0 +1,51 @@
+# Autofilled by tools/new_project_layout/probe_disc.py from your legal dump.
+# Review before shipping. Runtime quirks / overlay seeds still need hand work.
+
+[game]
+name = "Street Fighter Alpha 3"
+id = "SLUS-00821"
+players = 2
+exe = "disc/SLUS_008.21"
+disc = "disc/Street Fighter Alpha 3 (USA).cue"
+load_address = "0x80113B00"
+entry_pc = "0x80113B08"
+text_size = "0x000A5800"
+stack_base = "0x801FFFF0"
+
+# Digests are for data Track 01 (first BINARY FILE / TRACK 01).
+[prepare_disc]
+out_dir = "disc"
+bin_name = "Street Fighter Alpha 3 (USA) (Track 1).bin"
+cue_name = "Street Fighter Alpha 3 (USA).cue"
+boot_exe = "SLUS_008.21"
+known_sizes = [484081584]
+known_md5 = [
+  "c232562dced4e65664a9c5410e6e57a3",
+]
+known_sha1 = [
+  "ec98188f53dbfa08a59d89c981e9ca68b7f1748e",
+]
+
+[recompiler]
+seeds = "seeds/ghidra_funcs.txt"
+out_dir = "generated"
+strict = true
+
+[runtime]
+window_title = "Street Fighter Alpha 3 Recompiled"
+memcard_dir = "saves"
+
+[video]
+renderer = "opengl"
+aspect_ratio = "4:3"
+
+[controller]
+default_mode = "digital"
+allow_hybrid = false
+
+# Online mount gate: digests + track count + optional TOC fingerprint
+# (see docs/NETPLAY.md).
+[netplay]
+require_cue = true
+required_tracks = 2
+required_disc_fp = "cad48836331f2e1649c5389582014df3a52607dc10481def3c43138f72a81b2b"
