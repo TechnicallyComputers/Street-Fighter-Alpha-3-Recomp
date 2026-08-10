@@ -41,6 +41,7 @@ aspect_ratio = "4:3"
 
 [controller]
 default_mode = "digital"
+lock_mode = true
 allow_hybrid = false
 
 # Online mount gate: digests + track count + optional TOC fingerprint
