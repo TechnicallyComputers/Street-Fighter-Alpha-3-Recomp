@@ -43,7 +43,7 @@ exec bash "${PACKAGER}" \
   --display-name "Street Fighter Alpha 3  Recompiled" \
   --recompiler-build "${RECOMPILER_BUILD}" \
   --version-env RELEASE_VERSION \
-  --disc-hint "your legally owned Street Fighter Alpha 3 disc" \
+  --disc-hint "your legally owned Street-Fighter-Alpha-3- disc" \
   --project-file CMakeLists.txt \
   --project-file game.toml \
   --project-file VERSION \
