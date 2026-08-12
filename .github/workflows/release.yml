@@ -268,6 +268,53 @@ jobs:
           fi
           echo "Found ${HDR}"
 
+      # Ubuntu 24.04 has no libsdl3-dev; Windows MSYS ships SDL2. Setup-host
+      # therefore FetchContents the pinned SDL3 tarball. CMake's HTTP/2 download
+      # from github.com release assets intermittently dies with REFUSED_STREAM
+      # (curl status 56). Prefetch with curl --http1.1 and point FetchContent
+      # at the extracted tree (macOS uses brew sdl3 and skips this).
+      - name: Cache SDL3 source
+        if: runner.os != 'macOS'
+        uses: actions/cache@v4
+        with:
+          path: .cache/sdl3-src
+          key: sdl3-3.4.10-src
+
+      - name: Prefetch SDL3 source
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          OUT="${GITHUB_WORKSPACE}/.cache/sdl3-src"
+          if [[ -f "${OUT}/CMakeLists.txt" ]]; then
+            echo "PSX_SDL3_SOURCE_DIR=${OUT}" >>"$GITHUB_ENV"
+            echo "SDL3 source cache hit: ${OUT}"
+            exit 0
+          fi
+          if [[ -f psxrecomp/tools/ci/prefetch_sdl3.sh ]]; then
+            chmod +x psxrecomp/tools/ci/prefetch_sdl3.sh
+            bash psxrecomp/tools/ci/prefetch_sdl3.sh --out-dir "${OUT}"
+            exit 0
+          fi
+          # Submodule may predate the helper — inline HTTP/1.1 prefetch.
+          echo "prefetch_sdl3.sh missing; using inline curl --http1.1"
+          mkdir -p "${GITHUB_WORKSPACE}/.cache"
+          VER=3.4.10
+          SHA=12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785
+          URL="https://github.com/libsdl-org/SDL/releases/download/release-${VER}/SDL3-${VER}.tar.gz"
+          TAR="${GITHUB_WORKSPACE}/.cache/SDL3-${VER}.tar.gz"
+          curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 -o "${TAR}" "${URL}"
+          echo "${SHA}  ${TAR}" | sha256sum -c -
+          rm -rf "${OUT}.extracting"
+          mkdir -p "${OUT}.extracting"
+          tar -xzf "${TAR}" -C "${OUT}.extracting"
+          INNER="$(find "${OUT}.extracting" -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          rm -rf "${OUT}"
+          mv "${INNER}" "${OUT}"
+          rm -rf "${OUT}.extracting"
+          echo "PSX_SDL3_SOURCE_DIR=${OUT}" >>"$GITHUB_ENV"
+          echo "SDL3 source ready: ${OUT}"
+
       # Windows: build emitters with llvm-mingw from cmake-clang-v1 (static CLI).
       # Zip still omits toolchain/ — fetch is for the build machine only.
       - name: Fetch portable toolchain (Windows emitters)
@@ -404,6 +451,13 @@ jobs:
           # Add title-specific -D flags here if needed (e.g. -DMOTK_NATIVE=OFF).
           # Netplay titles: also pass -DPSX_NETPLAY=ON here (belt-and-suspenders
           # when CMakeLists already FORCE-caches it before include(runtime.cmake)).
+          # Prefer pre-fetched SDL3 (see Prefetch SDL3 source) so configure does
+          # not call CMake file(DOWNLOAD) against GitHub release assets.
+          if [[ -n "${PSX_SDL3_SOURCE_DIR:-}" && -f "${PSX_SDL3_SOURCE_DIR}/CMakeLists.txt" ]]; then
+            EXTRA+=("-DFETCHCONTENT_SOURCE_DIR_SDL3=${PSX_SDL3_SOURCE_DIR}")
+          elif [[ -f "${GITHUB_WORKSPACE}/.cache/sdl3-src/CMakeLists.txt" ]]; then
+            EXTRA+=("-DFETCHCONTENT_SOURCE_DIR_SDL3=${GITHUB_WORKSPACE}/.cache/sdl3-src")
+          fi
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPSXRECOMP_FORCE_SETUP_HOST=ON \
