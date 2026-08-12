@@ -27,9 +27,21 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.1.0 or v0.1.0)'
-        required: true
+        description: >-
+          Release version (e.g. 0.1.0 or v0.1.0). Leave empty to auto-bump
+          from the latest vX.Y.Z git tag (see bump).
+        required: false
         type: string
+        default: ''
+      bump:
+        description: 'When version is empty, which semver component to increment'
+        required: false
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
       publish:
         description: 'Create git tag vX.Y.Z and GitHub Release'
         required: true
@@ -64,6 +76,12 @@ jobs:
       publish: ${{ steps.meta.outputs.publish }}
       reuse_emitters: ${{ steps.meta.outputs.reuse_emitters }}
     steps:
+      - name: Checkout (tags for auto-bump)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Normalize version / tag
         id: meta
         shell: bash
@@ -71,24 +89,48 @@ jobs:
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             RAW="${{ github.event.inputs.version }}"
+            BUMP="${{ github.event.inputs.bump || 'patch' }}"
             PUBLISH="${{ github.event.inputs.publish }}"
-            REUSE="${{ github.event.inputs.reuse_cached_emitters }}"
+            REUSE="${{ github.event.inputs.reuse_cached_emitters || 'true' }}"
           else
             RAW="${{ github.ref_name }}"
+            BUMP="patch"
             PUBLISH="true"
             REUSE="true"
           fi
           RAW="$(printf '%s' "${RAW}" | tr -d '[:space:]')"
           if [[ -z "${RAW}" ]]; then
-            echo "::error::version is empty"
+            LATEST="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1 || true)"
+            BASE="${LATEST#v}"
+            if [[ -z "${BASE}" && -f VERSION ]]; then
+              BASE="$(tr -d '[:space:]' <VERSION)"
+              BASE="${BASE#v}"
+            fi
+            BASE="${BASE:-0.0.0}"
+            BASE="${BASE%%[-+]*}"
+            IFS=. read -r MA MI PA <<<"${BASE}"
+            MA="${MA:-0}"; MI="${MI:-0}"; PA="${PA:-0}"
+            case "${BUMP}" in
+              major) MA=$((MA + 1)); MI=0; PA=0 ;;
+              minor) MI=$((MI + 1)); PA=0 ;;
+              *) PA=$((PA + 1)) ;;
+            esac
+            VER="${MA}.${MI}.${PA}"
+            TAG="v${VER}"
+            echo "Auto-bumped ${BUMP}: ${LATEST:-none} → ${VER}"
+          else
+            VER="${RAW#v}"
+            if [[ ! "${VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.+-]*)?$ ]]; then
+              echo "::error::invalid version '${RAW}' (want X.Y.Z or vX.Y.Z)"
+              exit 1
+            fi
+            TAG="v${VER}"
+          fi
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]] && \
+             git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "::error::tag ${TAG} already exists — bump again or pass an explicit version"
             exit 1
           fi
-          VER="${RAW#v}"
-          if [[ ! "${VER}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.+-][A-Za-z0-9.+-]*)?$ ]]; then
-            echo "::error::invalid version '${RAW}' (want X.Y.Z or vX.Y.Z)"
-            exit 1
-          fi
-          TAG="v${VER}"
           echo "version=${VER}" >>"$GITHUB_OUTPUT"
           echo "tag=${TAG}" >>"$GITHUB_OUTPUT"
           echo "publish=${PUBLISH}" >>"$GITHUB_OUTPUT"
