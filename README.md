@@ -6,6 +6,12 @@
 [![GitHub release](https://img.shields.io/github/v/release/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
 <!-- /retcomm-readme-metrics -->
 
+<!-- retcomm-readme-boxart -->
+<p align="center">
+  <img src="launcher_assets/img/boxart.png" alt="Street-Fighter-Alpha-3- box art" width="280">
+</p>
+<!-- /retcomm-readme-boxart -->
+
 Static recompilation of **Street Fighter Alpha 3** built on
 [psxrecomp](https://github.com/mstan/psxrecomp) and
 [recomp-ui](https://github.com/mstan/recomp-ui).
