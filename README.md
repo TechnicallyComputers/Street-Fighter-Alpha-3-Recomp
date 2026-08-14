@@ -4,11 +4,6 @@
 [![GitHub downloads (all assets, all releases)](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/total)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases)
 [![GitHub downloads (latest release)](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/latest/total)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
 [![GitHub release](https://img.shields.io/github/v/release/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
-
-[![Linux](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/latest/sfa-%2A-linux-x64.zip)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
-[![Windows](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/latest/sfa-%2A-windows-x64.zip)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
-[![macOS arm64](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/latest/sfa-%2A-macos-arm64.zip)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
-[![macOS x64](https://img.shields.io/github/downloads/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/latest/sfa-%2A-macos-x64.zip)](https://github.com/TechnicallyComputers/Street-Fighter-Alpha-3-Recomp/releases/latest)
 <!-- /retcomm-readme-metrics -->
 
 Static recompilation of **Street Fighter Alpha 3** built on
