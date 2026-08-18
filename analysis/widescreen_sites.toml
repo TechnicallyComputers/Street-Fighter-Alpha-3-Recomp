@@ -1,0 +1,17 @@
+# [widescreen] candidates from `psxrecomp-analyze --scan-widescreen`.
+# Static analysis only — no runtime, trace, or overlay capture was read.
+#
+# These are CANDIDATES. Every one satisfies the instruction form
+# code_generator.cpp requires, so none can break the build, but only
+# playtesting shows whether a site is the right one to widen.
+# Paste into game.toml and cut what does not help.
+
+[widescreen.cull]
+auto_screen_x = true   # 5 function(s) carry the screen-extent signature
+# Discovered from the image: width/height compare immediates scored by
+# CO-OCCURRENCE in the same function (the screen-extent signature),
+# weighted toward GTE code and the console's real display modes.
+# Verify before trusting — extra entries only widen what auto_screen_x
+# considers, but a wrong one widens the wrong compare.
+screen_w_imms = ["0x100", "0x101"]
+screen_h_imms = ["0x190", "0x191"]
