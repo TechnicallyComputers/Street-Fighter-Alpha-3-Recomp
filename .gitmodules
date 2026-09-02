@@ -6,4 +6,4 @@
 [submodule "recomp-ui"]
 	path = recomp-ui
 	url = https://github.com/mstan/recomp-ui.git
-	branch = feat/multi-disc-launcher
+	branch = master
