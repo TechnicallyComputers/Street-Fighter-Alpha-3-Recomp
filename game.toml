@@ -32,6 +32,9 @@ out_dir = "generated"
 strict = true
 
 [runtime]
+# Enable the overlay loader: the shipped static shard / bundled overlay
+# toolchain turn streamed overlays native instead of running them interpreted.
+overlay_cache = true
 window_title = "Street Fighter Alpha 3 Recompiled"
 memcard_dir = "saves"
 

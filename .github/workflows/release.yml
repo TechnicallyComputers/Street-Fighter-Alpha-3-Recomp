@@ -1,30 +1,43 @@
-# Setup-host multi-platform release template for a PSXRecomp *game* repository.
+# Bundled multi-platform release template for a PSXRecomp *game* repository.
 #
 # Install:
 #   mkdir -p .github/workflows
-#   cp psxrecomp/docs/ci/templates/setup-release.yml .github/workflows/release.yml
-# Then replace every YOUR_* token (or let setup_project / fill_tokens.py do it).
-# See docs/GAME_PROJECT_SETUP.md.
+#   cp psxrecomp/docs/ci/templates/game-release.yml .github/workflows/release.yml
+# Then replace every YOUR_* token (or let setup_project / fill_tokens.py /
+# tools/generate_ci do it). See docs/GAME_PROJECT_SETUP.md.
+#
+# WHAT THIS SHIPS. A compiled game. The title COMMITS its generated/ game C
+# (psxrecomp_cli.py generate, run once by the developer from a legal disc);
+# the framework COMMITS its two BIOS backends (OpenBIOS and SCPH-1001) in
+# psxrecomp/generated/. CI links both into the runtime and packages the
+# executable with its runtime data. Players download, point it at their disc
+# (and, if they want the retail BIOS, their own dump — the runtime needs the
+# image's data and checks its identity), and play. Nothing is generated or
+# compiled on a player's machine, and no emitters, sources, or CLI ship at
+# the zip root.
+#
+# WHAT NEVER SHIPS. Disc images and BIOS dumps (the zip carries only the
+# OpenBIOS image). The overlay shard cache: it is compiled FROM THE DISC,
+# which CI does not have, so the committed static AOT shard
+# (generated/overlays_static*.c) is linked and the bundled
+# overlay_toolchain/ compiles anything else from the player's disc at
+# runtime. Do not set PSX_PGO in CI.
 #
 # Shared (do not fork these into the title):
-#   ./psxrecomp/.github/actions/{build-emitters,fetch-toolchain (optional embed),stage-setup-sdk}
-#   psxrecomp/tools/ci/*.sh
-#   psxrecomp/tools/{fetch_toolchain,stage_setup_sdk,bundle_mingw_dlls,package_setup_host}.sh
-#   psxrecomp/psxrecomp_cli.py  (CLI lives in the submodule — no psxrecomp-sdk/)
+#   ./psxrecomp/.github/actions/{build-emitters,fetch-toolchain}
+#   psxrecomp/tools/ci/{check_boot_exe,check_generated,record_pins}.sh
+#   psxrecomp/tools/{package_game_release,bundle_mingw_dlls}.sh
+#   psxrecomp/tools/release_stage.py  (mod catalog + overlay toolchain staging)
 #
 # Title-owned:
-#   CMake setup-host flags, thin scripts/package_setup_release.sh wrapper
+#   CMakeLists.txt flags, the thin scripts/package_release.sh wrapper
 #
-# No private CI assets. No BIOS dumps. No generated/ required.
-# Do not set PSX_PGO in CI (PGO stays user-local after Generate).
-# Release hosts always build with PSX_HAVE_VULKAN (headers + glslc); runtime
-# still loads the ICD dynamically via SDL.
+# Release hosts always build with PSX_HAVE_VULKAN (headers + glslc); the
+# runtime still loads the ICD dynamically via SDL.
 #
 # workflow_dispatch: leave version empty to auto-bump patch (or choose bump).
-# Host-focused releases: CI never ships game C. Players Generate once; Retro
-# Update reuses codegen-cache when ROM/BIOS/emitters match (cmake-only).
-# See docs/ci/HOST_ONLY_RELEASES.md. reuse_cached_emitters skips rebuilding
-# psxrecomp-game/bios when the psxrecomp SHA cache hits (host/UI bumps).
+# reuse_cached_emitters skips rebuilding psxrecomp-game/bios when the
+# psxrecomp submodule SHA cache hits. See docs/ci/BUNDLED_RELEASES.md.
 
 name: Release builds
 
@@ -195,9 +208,27 @@ jobs:
         shell: bash
         run: bash psxrecomp/tools/ci/record_pins.sh
 
-      - name: Setup host mode (no game C / BIOS backends in CI)
+      # game.toml, CMakeLists GEN_MARKER and codegen_setup.c each carry the
+      # boot-EXE name; the committed generated/ files are named after it, so a
+      # skew means the build looks for C the checkout does not have.
+      - name: Lint boot-EXE name consistency
         shell: bash
-        run: bash psxrecomp/tools/ci/clear_generated.sh
+        run: bash psxrecomp/tools/ci/check_boot_exe.sh .
+
+      # The release is built from COMMITTED C: the title's game C and the
+      # framework's BIOS backends. Fail here, at the top, when either is
+      # absent or untracked, or when a BIOS dump is in the tree.
+      - name: Verify committed game C
+        shell: bash
+        run: bash psxrecomp/tools/ci/check_generated.sh --root .
+
+      # The framework's committed BIOS backends must carry stamps that match
+      # the emitter fingerprint computed HERE. runtime.cmake re-checks this at
+      # configure (BIOS_STALE_FATAL); this step runs first and, on mismatch,
+      # prints every input's digest so the disagreement names a file.
+      - name: Verify BIOS backend stamps
+        shell: bash
+        run: bash psxrecomp/tools/ci/check_bios_stamps.sh --framework psxrecomp
 
       - name: Setup MSYS2 (Windows)
         if: runner.os == 'Windows'
@@ -215,6 +246,7 @@ jobs:
             mingw-w64-x86_64-shaderc
             curl
             zip
+            unzip
 
       - name: Install deps (Linux)
         if: runner.os == 'Linux'
@@ -226,7 +258,7 @@ jobs:
             libsdl2-dev libgl1-mesa-dev libxtst-dev \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev \
             libxfixes-dev libxi-dev libxss-dev libxkbcommon-dev \
-            libasound2-dev libpulse-dev libudev-dev zip \
+            libasound2-dev libpulse-dev libudev-dev zip unzip \
             libvulkan-dev glslc
 
       - name: Install deps (macOS)
@@ -239,7 +271,7 @@ jobs:
 
       # Headers + glslc are enough to compile PSX_HAVE_VULKAN (runtime still
       # loads the ICD dynamically via SDL). Fail early if the stub path would
-      # be selected so release hosts always ship the real Vulkan backend.
+      # be selected so releases always ship the real Vulkan backend.
       - name: Verify Vulkan build tools
         run: |
           set -euo pipefail
@@ -268,11 +300,11 @@ jobs:
           fi
           echo "Found ${HDR}"
 
-      # Ubuntu 24.04 has no libsdl3-dev; Windows MSYS ships SDL2. Setup-host
-      # therefore FetchContents the pinned SDL3 tarball. CMake's HTTP/2 download
-      # from github.com release assets intermittently dies with REFUSED_STREAM
-      # (curl status 56). Prefetch with curl --http1.1 and point FetchContent
-      # at the extracted tree (macOS uses brew sdl3 and skips this).
+      # Ubuntu 24.04 has no libsdl3-dev; Windows MSYS ships SDL2. The runtime
+      # therefore FetchContents the pinned SDL3 tarball. CMake's HTTP/2
+      # download from github.com release assets intermittently dies with
+      # REFUSED_STREAM (curl status 56). Prefetch with curl --http1.1 and point
+      # FetchContent at the extracted tree (macOS uses brew sdl3 and skips this).
       - name: Cache SDL3 source
         if: runner.os != 'macOS'
         uses: actions/cache@v4
@@ -285,10 +317,23 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          OUT="${GITHUB_WORKSPACE}/.cache/sdl3-src"
+          # Use repo-relative paths for tar: Windows GITHUB_WORKSPACE is D:\…
+          # and GNU tar treats drive-letter abs paths as remote hosts
+          # ("Cannot connect to D"). Prefer prefetch_sdl3.sh when present.
+          OUT=".cache/sdl3-src"
+          sdl3_env() {
+            local abs="${OUT}"
+            if command -v cygpath >/dev/null 2>&1; then
+              abs="$(cygpath -m "${OUT}")"
+            elif [[ -d "${OUT}" ]]; then
+              abs="$(cd "${OUT}" && pwd)"
+            fi
+            echo "PSX_SDL3_SOURCE_DIR=${abs}" >>"$GITHUB_ENV"
+            echo "SDL3 source ready: ${abs}"
+          }
           if [[ -f "${OUT}/CMakeLists.txt" ]]; then
-            echo "PSX_SDL3_SOURCE_DIR=${OUT}" >>"$GITHUB_ENV"
-            echo "SDL3 source cache hit: ${OUT}"
+            sdl3_env
+            echo "SDL3 source cache hit"
             exit 0
           fi
           if [[ -f psxrecomp/tools/ci/prefetch_sdl3.sh ]]; then
@@ -298,33 +343,39 @@ jobs:
           fi
           # Submodule may predate the helper — inline HTTP/1.1 prefetch.
           echo "prefetch_sdl3.sh missing; using inline curl --http1.1"
-          mkdir -p "${GITHUB_WORKSPACE}/.cache"
+          mkdir -p .cache
           VER=3.4.10
           SHA=12b34280415ec8418c864408b93d008a20a6530687ee613d60bfbd20411f2785
           URL="https://github.com/libsdl-org/SDL/releases/download/release-${VER}/SDL3-${VER}.tar.gz"
-          TAR="${GITHUB_WORKSPACE}/.cache/SDL3-${VER}.tar.gz"
+          TAR=".cache/SDL3-${VER}.tar.gz"
           curl -fsSL --http1.1 --retry 5 --retry-all-errors --retry-delay 2 -o "${TAR}" "${URL}"
           echo "${SHA}  ${TAR}" | sha256sum -c -
           rm -rf "${OUT}.extracting"
           mkdir -p "${OUT}.extracting"
-          tar -xzf "${TAR}" -C "${OUT}.extracting"
+          # --force-local: belt-and-suspenders if a path ever gains a colon.
+          if tar --help 2>&1 | grep -q -- '--force-local'; then
+            tar --force-local -xzf "${TAR}" -C "${OUT}.extracting"
+          else
+            tar -xzf "${TAR}" -C "${OUT}.extracting"
+          fi
           INNER="$(find "${OUT}.extracting" -mindepth 1 -maxdepth 1 -type d | head -n1)"
           rm -rf "${OUT}"
           mv "${INNER}" "${OUT}"
           rm -rf "${OUT}.extracting"
-          echo "PSX_SDL3_SOURCE_DIR=${OUT}" >>"$GITHUB_ENV"
-          echo "SDL3 source ready: ${OUT}"
+          sdl3_env
 
-      # Windows: build emitters with llvm-mingw from cmake-clang-v1 (static CLI).
-      # Zip still omits toolchain/ — fetch is for the build machine only.
+      # Windows: build emitters with llvm-mingw from cmake-clang-v1 (static
+      # CLI). The pack is for the build machine only; it never ships.
       - name: Fetch portable toolchain (Windows emitters)
         if: runner.os == 'Windows'
         uses: ./psxrecomp/.github/actions/fetch-toolchain
         with:
           artifact: ${{ matrix.artifact }}
 
-      # Host/UI-only bumps keep the same psxrecomp gitlink → cache hit skips
-      # rebuilding emitters (see reuse_cached_emitters / HOST_ONLY_RELEASES.md).
+      # Emitters ship inside overlay_toolchain/ so the runtime can compile
+      # overlays from the player's disc (and a BIOS backend for a known image
+      # this build does not link). Host/UI-only bumps keep the same psxrecomp
+      # gitlink → cache hit skips rebuilding them (see reuse_cached_emitters).
       - name: Emitter cache key
         id: emitter_cache
         shell: bash
@@ -352,7 +403,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Restored cache or fresh build must leave packager inputs in place.
+          # Restored cache or fresh build must leave both emitters in place.
           test -d build-recompiler
           find build-recompiler -type f \( -name 'psxrecomp-game*' -o -name 'psxrecomp-bios*' \) | head
           count="$(find build-recompiler -type f \( -name 'psxrecomp-game*' -o -name 'psxrecomp-bios*' \) | wc -l | tr -d ' ')"
@@ -361,14 +412,16 @@ jobs:
             exit 1
           fi
 
-      - name: Setup ccache (Linux/macOS host build)
+      # The generated game C is tens of MB per title; ccache turns a host/UI
+      # bump into a link-only rebuild on every platform.
+      - name: Setup ccache (Linux/macOS)
         if: runner.os != 'Windows'
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: setup-host-${{ matrix.artifact }}
-          max-size: 800M
+          key: game-${{ matrix.artifact }}
+          max-size: 2G
 
-      - name: Configure & build setup host
+      - name: Configure & build the game
         env:
           CMAKE_OSX_DEPLOYMENT_TARGET: ${{ matrix.deployment_target || '' }}
         run: |
@@ -420,39 +473,22 @@ jobs:
           fi
           JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
           # Emitters may have set PSXRECOMP_TOOLCHAIN_DIR (llvm-mingw) via
-          # GITHUB_ENV. Clear it before the MSYS2 g++ setup-host configure so
-          # pack lib/ cannot win -L for -static-libstdc++ (codecvt link errors).
+          # GITHUB_ENV. Clear it before the MSYS2 g++ configure so the pack's
+          # lib/ cannot win -L for -static-libstdc++ (codecvt link errors).
           if [[ "$(uname -s)" == MINGW* || "$(uname -s)" == MSYS* ]]; then
             unset PSXRECOMP_TOOLCHAIN_DIR TOOLCHAIN_DIR BPE_TOOLCHAIN_DIR RETCOMM_TOOLCHAIN_DIR || true
             unset CMAKE_PREFIX_PATH SDL3_DIR ZLIB_ROOT || true
           fi
-          # Setup host: no game C, no BIOS backends linked. clear_generated.sh
-          # already wiped generated/; end users Generate OpenBIOS (+ optional
-          # SCPH1001) locally via the wizard, then rebuild.
-          # Prefer -DPSXRECOMP_FORCE_SETUP_HOST=ON (psxrecomp_add_game_runtime).
-          # Legacy -DYOURGAME_FORCE_SETUP_HOST=ON still works if the title wires it.
-          # PSX_SETUP_WIZARD is required with FORCE_SETUP_HOST (CMakeLists
-          # ENABLE_SETUP_WIZARD + -D here). Without it the zip never opens
-          # first-run / Generate & rebuild.
-          # Title root codegen_setup.c must define
-          # psx_game_codegen_forward_if_built (see codegen_setup.c.in) or link
-          # fails — main.cpp always calls it, including setup-host CI builds.
+          # Full game build: the committed generated/ C is REQUIRED, so a
+          # checkout without it fails configure instead of silently producing
+          # a setup host. runtime.cmake links every BIOS backend whose C is
+          # committed in the submodule (OpenBIOS and SCPH-1001), and
+          # BIOS_STALE_FATAL refuses a stamp that predates the emitter.
+          # PSX_SETUP_WIZARD stays on: it is the first-run BIOS/disc picker.
           # Netplay titles: set PSX_NETPLAY ON in CMakeLists *before*
-          # include(runtime.cmake). ENABLE_NETPLAY_IF_PRESENT alone is too late
-          # (option() already cached OFF) and psx_netplay_sched.c still needs
-          # recomp_net/session.h. Also add -DPSX_NETPLAY=ON to this cmake
-          # invocation for CI belt-and-suspenders (do not leave it commented
-          # mid-continuation — that breaks the shell line).
-          # With PSX_NETPLAY, runtime.cmake defaults RNET_ENABLE_ICE=ON.
-          # recomp-net FetchContents libjuice via a pinned URL tarball (not
-          # git clone) so AppImage / mismatched libcurl hosts still configure.
-          # Offline: vendor under psxrecomp/lib/recomp-net/third_party/libjuice
-          # or pass -DRNET_LIBJUICE_ROOT=… / -DRNET_ENABLE_ICE=OFF.
+          # include(runtime.cmake) (ENABLE_NETPLAY_IF_PRESENT alone is too
+          # late) and add -DPSX_NETPLAY=ON below as belt-and-suspenders.
           # Add title-specific -D flags here if needed (e.g. -DMOTK_NATIVE=OFF).
-          # Netplay titles: also pass -DPSX_NETPLAY=ON here (belt-and-suspenders
-          # when CMakeLists already FORCE-caches it before include(runtime.cmake)).
-          # Prefer pre-fetched SDL3 (see Prefetch SDL3 source) so configure does
-          # not call CMake file(DOWNLOAD) against GitHub release assets.
           if [[ -n "${PSX_SDL3_SOURCE_DIR:-}" && -f "${PSX_SDL3_SOURCE_DIR}/CMakeLists.txt" ]]; then
             EXTRA+=("-DFETCHCONTENT_SOURCE_DIR_SDL3=${PSX_SDL3_SOURCE_DIR}")
           elif [[ -f "${GITHUB_WORKSPACE}/.cache/sdl3-src/CMakeLists.txt" ]]; then
@@ -460,47 +496,164 @@ jobs:
           fi
           cmake -S . -B build-ci -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPSXRECOMP_FORCE_SETUP_HOST=ON \
-            -DPSXRECOMP_ALLOW_NO_BIOS=ON \
+            -DPSXRECOMP_REQUIRE_GAME_C=ON \
+            -DPSXRECOMP_BIOS_STALE_FATAL=ON \
+            -DPSXRECOMP_FORCE_SETUP_HOST=OFF \
+            -DPSXRECOMP_ALLOW_NO_BIOS=OFF \
             -DPSX_SETUP_WIZARD=ON \
             -DPSX_GAME_VERSION="${RELEASE_VERSION}" \
             "${EXTRA[@]}" 2>&1 | tee build-ci-configure.log
+          # Assert the configure took the FULL path, not the setup-host one.
+          if ! grep -q 'linking generated game C (full runtime)' build-ci-configure.log; then
+            echo "::error::CMake did not link the generated game C (see configure log)"
+            exit 1
+          fi
+          if ! grep -qE 'BIOS backends linked: .*OpenBIOS' build-ci-configure.log; then
+            echo "::error::CMake did not link the OpenBIOS backend (psxrecomp/generated missing or stale?)"
+            exit 1
+          fi
+          if ! grep -qE 'BIOS backends linked: .*SCPH1001' build-ci-configure.log; then
+            echo "::error::CMake did not link the SCPH-1001 backend (psxrecomp/generated/SCPH1001_* missing or stale?)"
+            exit 1
+          fi
           if ! grep -q 'Vulkan backend: headers' build-ci-configure.log; then
             echo "::error::CMake did not enable PSX_HAVE_VULKAN (see configure log)"
             exit 1
           fi
           # Ninja does not emit flags.make (Makefiles generator only). Probe
-          # whichever compile-flag artifact exists for PSX_HAVE_VULKAN.
-          FOUND_VK_DEFINE=0
-          for f in \
-              build-ci/build.ninja \
-              build-ci/compile_commands.json \
-              build-ci/CMakeFiles/psx-runtime.dir/flags.make; do
-            if [[ -f "${f}" ]] && grep -q 'PSX_HAVE_VULKAN' "${f}"; then
-              FOUND_VK_DEFINE=1
-              echo "Found PSX_HAVE_VULKAN in ${f}"
-              break
+          # whichever compile-flag artifact exists for the defines the release
+          # depends on.
+          for define in PSX_HAVE_VULKAN PSX_HAS_GAME_DISPATCH; do
+            FOUND=0
+            for f in \
+                build-ci/build.ninja \
+                build-ci/compile_commands.json \
+                build-ci/CMakeFiles/psx-runtime.dir/flags.make; do
+              if [[ -f "${f}" ]] && grep -q "${define}" "${f}"; then
+                FOUND=1
+                echo "Found ${define} in ${f}"
+                break
+              fi
+            done
+            if [[ "${FOUND}" -ne 1 ]]; then
+              echo "::error::${define} missing from psx-runtime compile flags"
+              exit 1
             fi
           done
-          if [[ "${FOUND_VK_DEFINE}" -ne 1 ]]; then
-            echo "::error::PSX_HAVE_VULKAN missing from psx-runtime compile flags"
+          cmake --build build-ci --target psx-runtime -j"${JOBS}"
+          # Lobby list pin must match RELEASE_VERSION (the packager enforces).
+          STAMP=""
+          for cand in \
+              build-ci/psx_game_version.txt \
+              build-ci/Release/psx_game_version.txt \
+              build-ci/*/psx_game_version.txt
+          do
+            if [[ -f "${cand}" ]]; then STAMP="${cand}"; break; fi
+          done
+          if [[ -z "${STAMP}" ]]; then
+            STAMP="$(find build-ci -name psx_game_version.txt -type f 2>/dev/null | head -n1 || true)"
+          fi
+          if [[ -z "${STAMP}" || ! -f "${STAMP}" ]]; then
+            echo "::error::missing psx_game_version.txt after build (update psxrecomp submodule)"
             exit 1
           fi
-          cmake --build build-ci --target psx-runtime -j"${JOBS}"
+          BUILT="$(tr -d '[:space:]' <"${STAMP}")"
+          BUILT="${BUILT#v}"
+          if [[ "${BUILT}" != "${RELEASE_VERSION}" ]]; then
+            echo "::error::lobby pin stamp ${BUILT} != RELEASE_VERSION ${RELEASE_VERSION} (${STAMP})"
+            exit 1
+          fi
+          echo "lobby pin ok: ${BUILT} (${STAMP})"
 
-      - name: Package setup zip
+      - name: Package game zip
+        # Windows code signing (Smart App Control / SmartScreen): the packager
+        # signs the game exe and its DLLs when these secrets exist and skips
+        # signing, with a notice, when they do not. Put the .pfx in the
+        # repo's Actions secrets base64-encoded (`base64 -w0 cert.pfx`).
+        # See psxrecomp/docs/ci/README.md, "Windows code signing". Because the
+        # shipped exe IS the game, the signature now covers what the player
+        # runs — there is no unsigned locally built binary any more.
+        env:
+          WINDOWS_SIGN_PFX_BASE64: ${{ secrets.WINDOWS_SIGN_PFX_BASE64 }}
+          WINDOWS_SIGN_PFX_PASSWORD: ${{ secrets.WINDOWS_SIGN_PFX_PASSWORD }}
         run: |
           set -euo pipefail
-          chmod +x scripts/package_setup_release.sh
+          chmod +x scripts/package_release.sh
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             export PSXRECOMP_RUNTIME_BIN_DIR=/mingw64/bin
             export BPE_RUNTIME_BIN_DIR=/mingw64/bin
           fi
           export RELEASE_VERSION
-          # Lean zip (no embedded toolchain/). Retro / wizard download
-          # cmake-clang-v1; pass --embed-toolchain only for offline-first packs.
-          scripts/package_setup_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
+          scripts/package_release.sh build-ci "${{ matrix.artifact }}" build-recompiler
           ls -la dist/
+
+      - name: Verify zip contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Assert the artifact, not the intent: every rule below was once
+          # "the packager does that by default" and shipped broken anyway.
+          ZIP=$(ls dist/sfa-*-"${{ matrix.artifact }}".zip | head -1)
+          echo "checking ${ZIP}"
+          LIST="$(unzip -Z1 "${ZIP}")"
+          # 1. It is a game: the executable, the bundled OpenBIOS, and the
+          #    runtime data sit at the root.
+          for must in 'bios/openbios.bin' 'bios/OpenBIOS.LICENSE' 'game.toml' 'psx_game_version.txt' 'assets/fonts/' 'mods/bundled/'; do
+            if ! grep -q "^${must}" <<<"${LIST}"; then
+              echo "::error::release zip lacks ${must}" >&2
+              printf '%s\n' "${LIST}" | head -40 >&2
+              exit 1
+            fi
+          done
+          MANIFESTS=$(grep -c 'mods/bundled/.*/manifest\.toml' <<<"${LIST}" || true)
+          echo "mod manifests in zip: ${MANIFESTS}"
+          if [[ "${MANIFESTS}" -lt 1 ]]; then
+            echo "::error::release zip ships no mod catalog (mods/bundled/*/manifest.toml)" >&2
+            exit 1
+          fi
+          # 2. It is NOT a build kit: no framework tree, no CLI, no emitters at
+          #    the root, no sources, no generated C.
+          for never in '^psxrecomp/' '^recomp-ui/' '^psxrecomp_cli.py' '^psxrecomp-game' '^psxrecomp-bios' \
+                       '^generated/' '^seeds/' '^CMakeLists.txt' '^codegen_setup\.' '^toolchain/' '^src/'; do
+            if grep -qE "${never}" <<<"${LIST}"; then
+              echo "::error::release zip contains build-kit content matching ${never}" >&2
+              grep -E "${never}" <<<"${LIST}" | head -20 >&2
+              exit 1
+            fi
+          done
+          if grep -E '\.c$' <<<"${LIST}" | grep -qv '^overlay_toolchain/'; then
+            echo "::error::release zip contains C sources outside overlay_toolchain/" >&2
+            grep -E '\.c$' <<<"${LIST}" | grep -v '^overlay_toolchain/' | head -20 >&2
+            exit 1
+          fi
+          # 3. No BIOS dump, disc, or memory card; the only image is OpenBIOS.
+          if grep -iE '(^|/)SCPH|\.(cue|iso|img|chd|mcd|mcr)$' <<<"${LIST}" | grep -qv '\.toml$'; then
+            echo "::error::release zip contains a BIOS dump, disc, or memory card" >&2
+            grep -iE '(^|/)SCPH|\.(cue|iso|img|chd|mcd|mcr)$' <<<"${LIST}" | grep -v '\.toml$' >&2
+            exit 1
+          fi
+          if grep -iE '\.bin$' <<<"${LIST}" | grep -qv '^bios/openbios.bin$'; then
+            echo "::error::release zip contains a .bin other than bios/openbios.bin" >&2
+            grep -iE '\.bin$' <<<"${LIST}" | grep -v '^bios/openbios.bin$' >&2
+            exit 1
+          fi
+          # 4. Per-machine mod state never ships: state.toml is one machine's
+          #    selections, mods/installed/ is one developer's installs, and
+          #    developer-channel packages are unfinished work.
+          if grep -q 'state\.toml' <<<"${LIST}"; then
+            echo "::error::release zip contains mods/state.toml (per-machine state)" >&2
+            exit 1
+          fi
+          if grep -q 'mods/installed/' <<<"${LIST}"; then
+            echo "::error::release zip contains mods/installed (per-machine installs)" >&2
+            exit 1
+          fi
+          if unzip -p "${ZIP}" 'mods/**/manifest.toml' 2>/dev/null \
+               | grep -Eq '^[[:space:]]*channel[[:space:]]*=[[:space:]]*"developer"'; then
+            echo "::error::release zip contains developer-channel mod packages" >&2
+            exit 1
+          fi
+          echo "zip verified: compiled game, bundled OpenBIOS, mod catalog, no kit / dumps / dev mods"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -509,7 +662,7 @@ jobs:
           name: sfa-${{ matrix.artifact }}
           path: dist/sfa-*-${{ matrix.artifact }}.zip
           if-no-files-found: error
-          retention-days: 5
+          retention-days: 30
 
   release:
     name: GitHub Release

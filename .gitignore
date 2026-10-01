@@ -7,8 +7,7 @@
 /out/
 /.happypath/
 
-# Setup-host: players Generate game C locally (CI clears generated/).
-/generated/
+# generated/ is COMMITTED: releases ship the compiled game built from it.
 
 # Release packaging
 /release-stage/
@@ -73,3 +72,6 @@ starvation_dump.jsonl
 /*.png
 !/catalog_identity.json
 !/disc_probe.json
+
+# --- PSXRecomp (project studio) ---
+/analysis/
